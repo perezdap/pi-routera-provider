@@ -1,0 +1,24 @@
+{
+  "name": "pi-routera-provider",
+  "version": "0.1.0",
+  "description": "Routera.one provider extension for pi with Anthropic and OpenAI-compatible model routing.",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "test": "node test/routera.test.mjs"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "keywords": ["pi", "pi-package", "pi-extension", "routera", "provider", "llm"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/perezdap/pi-routera-provider.git"
+  },
+  "homepage": "https://github.com/perezdap/pi-routera-provider",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
