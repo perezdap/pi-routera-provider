@@ -34,9 +34,11 @@ const ANTHROPIC_MODELS_URL = `${OPENAI_BASE_URL}/models?compat=anthropic`;
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
-// Claude models expose a 64k output budget; keep that headroom so
-// budget-based thinking doesn't crowd out visible output.
-const ANTHROPIC_MAX_TOKENS = 64_000;
+// Anthropic's synchronous Messages API allows 128k output for 1M-context
+// Claude models and 64k for current 200k-context Claude models. The 300k
+// batch-only beta is intentionally not used for interactive pi requests.
+const ANTHROPIC_1M_CONTEXT_MAX_TOKENS = 128_000;
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 64_000;
 const DISCOVERY_TIMEOUT_MS = 15_000;
 
 /**
@@ -71,6 +73,8 @@ interface RouteraModelRecord {
 	name?: string;
 	owned_by?: string;
 	context_length?: number;
+	max_output_tokens?: number | null;
+	max_tokens?: number | null;
 	architecture?: {
 		modality?: string;
 	} | null;
@@ -131,6 +135,16 @@ function isReasoningModel(id: string): boolean {
 	return REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(id));
 }
 
+function anthropicMaxTokens(record: RouteraModelRecord, contextWindow: number): number {
+	const publishedMax = isPositiveNumber(record.max_output_tokens) ? record.max_output_tokens : record.max_tokens;
+	if (isPositiveNumber(publishedMax)) return Math.min(contextWindow, Math.floor(publishedMax));
+
+	return Math.min(
+		contextWindow,
+		contextWindow >= 1_000_000 ? ANTHROPIC_1M_CONTEXT_MAX_TOKENS : ANTHROPIC_DEFAULT_MAX_TOKENS,
+	);
+}
+
 // "off" is intentionally omitted from these maps: pi treats an absent `off`
 // entry as a supported level (undefined passes the `!== null` selectable
 // check), so the user can disable thinking. For OpenAI, off maps to no
@@ -163,7 +177,7 @@ function mapModel(record: RouteraModelRecord, api: RouteraApi): Model<RouteraApi
 			// Keep costs honest instead of interpreting undocumented pricing units.
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
-			maxTokens: Math.min(contextWindow, ANTHROPIC_MAX_TOKENS),
+			maxTokens: anthropicMaxTokens(record, contextWindow),
 			thinkingLevelMap: ANTHROPIC_THINKING_LEVEL_MAP,
 			compat: {
 				// Not every Routera Claude model supports adaptive thinking
