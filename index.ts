@@ -96,8 +96,11 @@ function isReasoningModel(id: string): boolean {
 	);
 }
 
+// "off" is intentionally omitted: pi treats an absent `off` entry as a
+// supported level (undefined passes the `!== null` selectable check), so the
+// user can disable thinking. For OpenAI, off maps to no `reasoning_effort`;
+// for Anthropic, off maps to `thinking: { type: "disabled" }`.
 const OPENAI_THINKING_LEVEL_MAP = {
-	off: null,
 	minimal: null,
 	low: "low",
 	medium: "medium",
@@ -107,7 +110,6 @@ const OPENAI_THINKING_LEVEL_MAP = {
 } as const;
 
 const ANTHROPIC_THINKING_LEVEL_MAP = {
-	off: null,
 	minimal: null,
 	low: "low",
 	medium: "medium",
@@ -143,9 +145,12 @@ function mapModel(record: RouteraModelRecord, api: RouteraApi): Model<RouteraApi
 			: {}),
 		compat: anthropic
 			? {
-				// Routera's Anthropic endpoint expects output_config.effort and does
-				// not document the newer per-tool eager streaming field.
-				forceAdaptiveThinking: true,
+				// Not every Routera Claude model supports adaptive thinking
+				// (e.g. claude-haiku-4.5 rejects it with a 400), so leave
+				// forceAdaptiveThinking unset and let pi use budget-based
+				// thinking, which Routera's Anthropic endpoint accepts on every
+				// model. Routera does not document the newer per-tool eager
+				// streaming field, so disable it.
 				supportsEagerToolInputStreaming: false,
 			}
 			: {

@@ -145,7 +145,9 @@ try {
 	assertEq(gpt?.compat?.supportsDeveloperRole, false, "GPT uses system role");
 	assertEq(claude?.api, "anthropic-messages", "Claude uses Anthropic API");
 	assertEq(claude?.baseUrl, "https://api.routera.one", "Claude uses Anthropic base URL without /v1");
-	assertEq(claude?.compat?.forceAdaptiveThinking, true, "Claude uses Routera effort format");
+	assertEq(claude?.compat?.forceAdaptiveThinking, undefined, "Claude uses pi budget-based thinking (Routera adaptive not universal)");
+	assert(claude?.compat?.supportsEagerToolInputStreaming === false, "Claude disables eager tool input streaming");
+	assert(claude?.thinkingLevelMap?.off === undefined, "Claude 'off' is a selectable level (omitted, not null)");
 	assertEq(claude?.contextWindow, 1000000, "context window mapped");
 	assert(Array.isArray(claude?.input) && claude.input.includes("image"), "vision input mapped");
 	assertEq(claude?.cost.input, 0, "undocumented Routera pricing units are not guessed");
