@@ -34,6 +34,9 @@ const ANTHROPIC_MODELS_URL = `${OPENAI_BASE_URL}/models?compat=anthropic`;
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+// OpenAI's GPT-5-class reasoning models allow 128k output; reasoning tokens
+// count against the completion budget, so keep the full headroom.
+const OPENAI_REASONING_MAX_TOKENS = 128_000;
 // Anthropic's synchronous Messages API allows 128k output for 1M-context
 // Claude models and 64k for current 200k-context Claude models. The 300k
 // batch-only beta is intentionally not used for interactive pi requests.
@@ -135,13 +138,23 @@ function isReasoningModel(id: string): boolean {
 	return REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(id));
 }
 
-function anthropicMaxTokens(record: RouteraModelRecord, contextWindow: number): number {
+function publishedMaxTokens(record: RouteraModelRecord): number | undefined {
 	const publishedMax = isPositiveNumber(record.max_output_tokens) ? record.max_output_tokens : record.max_tokens;
-	if (isPositiveNumber(publishedMax)) return Math.min(contextWindow, Math.floor(publishedMax));
+	return isPositiveNumber(publishedMax) ? Math.floor(publishedMax) : undefined;
+}
 
+function anthropicMaxTokens(record: RouteraModelRecord, contextWindow: number): number {
 	return Math.min(
 		contextWindow,
-		contextWindow >= 1_000_000 ? ANTHROPIC_1M_CONTEXT_MAX_TOKENS : ANTHROPIC_DEFAULT_MAX_TOKENS,
+		publishedMaxTokens(record) ??
+			(contextWindow >= 1_000_000 ? ANTHROPIC_1M_CONTEXT_MAX_TOKENS : ANTHROPIC_DEFAULT_MAX_TOKENS),
+	);
+}
+
+function openAIMaxTokens(record: RouteraModelRecord, contextWindow: number, reasoning: boolean): number {
+	return Math.min(
+		contextWindow,
+		publishedMaxTokens(record) ?? (reasoning ? OPENAI_REASONING_MAX_TOKENS : DEFAULT_MAX_TOKENS),
 	);
 }
 
@@ -204,7 +217,7 @@ function mapModel(record: RouteraModelRecord, api: RouteraApi): Model<RouteraApi
 		// Keep costs honest instead of interpreting undocumented pricing units.
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow,
-		maxTokens: Math.min(contextWindow, DEFAULT_MAX_TOKENS),
+		maxTokens: openAIMaxTokens(record, contextWindow, reasoning),
 		...(reasoning ? { thinkingLevelMap: OPENAI_THINKING_LEVEL_MAP } : {}),
 		compat: {
 			// Routera documents system/messages and reasoning_effort, but not

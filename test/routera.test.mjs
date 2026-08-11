@@ -40,6 +40,21 @@ const catalogs = {
 				architecture: { modality: "text->image" },
 			},
 			{
+				id: "qwen/qwen3.5-27b",
+				name: "Qwen 3.5 27B",
+				owned_by: "qwen",
+				context_length: 262144,
+				architecture: { modality: "text->text" },
+			},
+			{
+				id: "moonshot/kimi-k3",
+				name: "Kimi K3",
+				owned_by: "moonshot",
+				context_length: 1000000,
+				max_output_tokens: 32768,
+				architecture: { modality: "text->text" },
+			},
+			{
 				id: "anthropic/claude-opus-4.8",
 				name: "Claude Opus 4.8",
 				owned_by: "anthropic",
@@ -139,13 +154,17 @@ try {
 	assert(published.length === 1, "catalog published once");
 
 	const models = provider.getModels();
-	assertEq(models.length, 3, "text models discovered and image generation filtered");
+	assertEq(models.length, 5, "text models discovered and image generation filtered");
 	const gpt = models.find((model) => model.id === "openai/gpt-5.5");
 	const claude = models.find((model) => model.id === "anthropic/claude-opus-4.8");
 	const haiku = models.find((model) => model.id === "anthropic/claude-haiku-4.5");
+	const qwen = models.find((model) => model.id === "qwen/qwen3.5-27b");
+	const kimi = models.find((model) => model.id === "moonshot/kimi-k3");
 	assert(!!gpt, "GPT model discovered");
 	assert(!!claude, "Claude model discovered");
 	assert(!!haiku, "Haiku model discovered");
+	assert(!!qwen, "Qwen model discovered");
+	assert(!!kimi, "Kimi model discovered");
 	assertEq(gpt?.api, "openai-completions", "GPT uses OpenAI API");
 	assertEq(gpt?.baseUrl, "https://api.routera.one/v1", "GPT uses OpenAI base URL");
 	assertEq(gpt?.compat?.supportsDeveloperRole, false, "GPT uses system role");
@@ -154,13 +173,15 @@ try {
 	assertEq(claude?.compat?.forceAdaptiveThinking, undefined, "Claude uses pi budget-based thinking (Routera adaptive not universal)");
 	assert(claude?.compat?.supportsEagerToolInputStreaming === false, "Claude disables eager tool input streaming");
 	assert(claude?.thinkingLevelMap?.off === undefined, "Claude 'off' is a selectable level (omitted, not null)");
-	assertEq(gpt?.maxTokens, 16384, "OpenAI maxTokens capped at the default output budget");
+	assertEq(gpt?.maxTokens, 128000, "OpenAI reasoning models get the 128k output budget");
+	assertEq(qwen?.maxTokens, 16384, "non-reasoning OpenAI models keep the default output budget");
+	assertEq(kimi?.maxTokens, 32768, "published max_output_tokens wins over the reasoning budget");
 	assertEq(claude?.maxTokens, 128000, "1M Claude models use Anthropic's synchronous 128k output budget");
 	assertEq(haiku?.maxTokens, 64000, "200k Claude models keep the 64k output budget");
 	assertEq(claude?.contextWindow, 1000000, "context window mapped");
 	assert(Array.isArray(claude?.input) && claude.input.includes("image"), "vision input mapped");
 	assertEq(claude?.cost.input, 0, "undocumented Routera pricing units are not guessed");
-	assert(!models.some((model) => model.id === "moonshot/kimi-k3"), "non-Anthropic compatibility entry ignored");
+	assertEq(kimi?.api, "openai-completions", "non-Anthropic compatibility entry routed to OpenAI API, not Anthropic");
 
 
 	const auth = provider.auth.apiKey;
