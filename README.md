@@ -63,6 +63,10 @@ vendor prefix.
   `openai-completions`.
 - Routera's Anthropic endpoint is configured with the base URL
   `https://api.routera.one` because the Anthropic client appends `/v1/messages`.
+- Routera's canonical auth is `Authorization: Bearer <key>`; the provider
+  declares that header during auth resolution so both API families send it.
+  Anthropic requests additionally include the `x-api-key` header added by pi's
+  Anthropic client, which Routera also accepts.
 - Routera bills platform tokens rather than documenting USD model rates, so pi
   cost metadata is intentionally zero instead of guessing the units of the
   catalog's pricing fields.
@@ -83,4 +87,5 @@ npm test
 ```
 
 The test uses mocked model catalogs and does not make an authenticated Routera
-request.
+request. Node >= 22.6 is required so the test runner can import `index.ts`
+directly (and for `AbortSignal.any`).

@@ -21,6 +21,7 @@ import {
 	createProvider,
 	envApiKeyAuth,
 	openAICompletionsApi,
+	type ApiKeyAuth,
 	type Model,
 	type RefreshModelsContext,
 } from "@earendil-works/pi-ai/compat";
@@ -33,7 +34,35 @@ const ANTHROPIC_MODELS_URL = `${OPENAI_BASE_URL}/models?compat=anthropic`;
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+// Claude models expose a 64k output budget; keep that headroom so
+// budget-based thinking doesn't crowd out visible output.
+const ANTHROPIC_MAX_TOKENS = 64_000;
 const DISCOVERY_TIMEOUT_MS = 15_000;
+
+/**
+ * Routera documents `Authorization: Bearer <key>` as its canonical auth
+ * header. pi's Anthropic client adds `x-api-key` for its models and OpenAI's
+ * client adds `Authorization` itself, but declaring the Bearer header on the
+ * resolved auth guarantees it is present for every Routera request — both
+ * endpoints accept it — regardless of how each client assembles headers.
+ */
+function bearerHeaderAuth(inner: ApiKeyAuth): ApiKeyAuth {
+	return {
+		name: inner.name,
+		login: inner.login,
+		async resolve(input) {
+			const result = await inner.resolve(input);
+			if (!result?.auth.apiKey) return result;
+			return {
+				...result,
+				auth: {
+					...result.auth,
+					headers: { ...result.auth.headers, Authorization: `Bearer ${result.auth.apiKey}` },
+				},
+			};
+		},
+	};
+}
 
 type RouteraApi = "anthropic-messages" | "openai-completions";
 
@@ -90,61 +119,53 @@ function supportsImageInput(model: RouteraModelRecord): boolean {
 	return model.architecture?.modality?.toLowerCase().includes("image") ?? false;
 }
 
+const REASONING_MODEL_PATTERNS: readonly RegExp[] = [
+	/(?:^|[/_.-])o[134](?:[/_.-]|$)/i, // OpenAI o-series reasoning models
+	/(?:^|[/_.-])gpt-5(?:[/_.-]|$)/i, // OpenAI GPT-5
+	/(?:^|[/_.-])deepseek-r(?:easoner)?(?:[/_.-]|$)/i, // DeepSeek R-series + Reasoner
+	/(?:^|[/_.-])kimi-k\d/i, // Kimi K-series reasoning models
+	/(?:^|[/_.-])qwen[^/]*think/i, // Qwen thinking variants
+];
+
 function isReasoningModel(id: string): boolean {
-	return /(?:^|[/_.-])(?:o[134](?:[/_.-]|$)|gpt-5(?:[/_.-]|$)|deepseek-r(?:easoner)?(?:[/_.-]|$)|kimi-k\d|qwen[^/]*think)/i.test(
-		id,
-	);
+	return REASONING_MODEL_PATTERNS.some((pattern) => pattern.test(id));
 }
 
-// "off" is intentionally omitted: pi treats an absent `off` entry as a
-// supported level (undefined passes the `!== null` selectable check), so the
-// user can disable thinking. For OpenAI, off maps to no `reasoning_effort`;
-// for Anthropic, off maps to `thinking: { type: "disabled" }`.
-const OPENAI_THINKING_LEVEL_MAP = {
+// "off" is intentionally omitted from these maps: pi treats an absent `off`
+// entry as a supported level (undefined passes the `!== null` selectable
+// check), so the user can disable thinking. For OpenAI, off maps to no
+// `reasoning_effort`; for Anthropic, off maps to `thinking: { type: "disabled" }`.
+const THINKING_LEVEL_MAP_BASE = {
 	minimal: null,
 	low: "low",
 	medium: "medium",
 	high: "high",
-	xhigh: null,
-	max: null,
 } as const;
 
-const ANTHROPIC_THINKING_LEVEL_MAP = {
-	minimal: null,
-	low: "low",
-	medium: "medium",
-	high: "high",
-	xhigh: "xhigh",
-	max: "max",
-} as const;
+const OPENAI_THINKING_LEVEL_MAP = { ...THINKING_LEVEL_MAP_BASE, xhigh: null, max: null } as const;
+const ANTHROPIC_THINKING_LEVEL_MAP = { ...THINKING_LEVEL_MAP_BASE, xhigh: "xhigh", max: "max" } as const;
 
 function mapModel(record: RouteraModelRecord, api: RouteraApi): Model<RouteraApi> {
-	const anthropic = api === "anthropic-messages";
 	const contextWindow = isPositiveNumber(record.context_length)
 		? Math.floor(record.context_length)
 		: DEFAULT_CONTEXT_WINDOW;
-	const reasoning = anthropic || isReasoningModel(record.id);
 
-	return {
-		id: record.id,
-		name: record.name ?? record.id,
-		api,
-		provider: PROVIDER_ID,
-		baseUrl: anthropic ? ROUTERA_BASE_URL : OPENAI_BASE_URL,
-		reasoning,
-		input: supportsImageInput(record) ? ["text", "image"] : ["text"],
-		// Routera bills platform tokens rather than publishing USD rates for pi.
-		// Keep costs honest instead of interpreting undocumented pricing units.
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow,
-		maxTokens: Math.min(contextWindow, DEFAULT_MAX_TOKENS),
-		...(reasoning
-			? {
-				thinkingLevelMap: anthropic ? ANTHROPIC_THINKING_LEVEL_MAP : OPENAI_THINKING_LEVEL_MAP,
-			}
-			: {}),
-		compat: anthropic
-			? {
+	if (api === "anthropic-messages") {
+		return {
+			id: record.id,
+			name: record.name ?? record.id,
+			api,
+			provider: PROVIDER_ID,
+			baseUrl: ROUTERA_BASE_URL,
+			reasoning: true,
+			input: supportsImageInput(record) ? ["text", "image"] : ["text"],
+			// Routera bills platform tokens rather than publishing USD rates for pi.
+			// Keep costs honest instead of interpreting undocumented pricing units.
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow,
+			maxTokens: Math.min(contextWindow, ANTHROPIC_MAX_TOKENS),
+			thinkingLevelMap: ANTHROPIC_THINKING_LEVEL_MAP,
+			compat: {
 				// Not every Routera Claude model supports adaptive thinking
 				// (e.g. claude-haiku-4.5 rejects it with a 400), so leave
 				// forceAdaptiveThinking unset and let pi use budget-based
@@ -152,19 +173,38 @@ function mapModel(record: RouteraModelRecord, api: RouteraApi): Model<RouteraApi
 				// model. Routera does not document the newer per-tool eager
 				// streaming field, so disable it.
 				supportsEagerToolInputStreaming: false,
-			}
-			: {
-				// Routera documents system/messages and reasoning_effort, but not
-				// OpenAI's developer role or store field.
-				supportsDeveloperRole: false,
-				supportsStore: false,
-				maxTokensField: "max_completion_tokens",
-				supportsReasoningEffort: reasoning,
 			},
-	} as Model<RouteraApi>;
+		};
+	}
+
+	const reasoning = isReasoningModel(record.id);
+	return {
+		id: record.id,
+		name: record.name ?? record.id,
+		api,
+		provider: PROVIDER_ID,
+		baseUrl: OPENAI_BASE_URL,
+		reasoning,
+		input: supportsImageInput(record) ? ["text", "image"] : ["text"],
+		// Routera bills platform tokens rather than publishing USD rates for pi.
+		// Keep costs honest instead of interpreting undocumented pricing units.
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow,
+		maxTokens: Math.min(contextWindow, DEFAULT_MAX_TOKENS),
+		...(reasoning ? { thinkingLevelMap: OPENAI_THINKING_LEVEL_MAP } : {}),
+		compat: {
+			// Routera documents system/messages and reasoning_effort, but not
+			// OpenAI's developer role or store field.
+			supportsDeveloperRole: false,
+			supportsStore: false,
+			maxTokensField: "max_completion_tokens",
+			supportsReasoningEffort: reasoning,
+		},
+	};
 }
 
 async function fetchCatalog(
+	label: string,
 	url: string,
 	apiKey: string,
 	signal: AbortSignal,
@@ -177,7 +217,7 @@ async function fetchCatalog(
 		signal: AbortSignal.any([signal, AbortSignal.timeout(DISCOVERY_TIMEOUT_MS)]),
 	});
 	if (!response.ok) {
-		throw new Error(`Routera ${url.endsWith("models") ? "models" : "Anthropic models"} returned HTTP ${response.status} ${response.statusText}`);
+		throw new Error(`Routera ${label} returned HTTP ${response.status} ${response.statusText}`);
 	}
 
 	const body = (await response.json()) as RouteraModelsResponse;
@@ -190,8 +230,8 @@ async function fetchRouteraModels(context: RefreshModelsContext): Promise<readon
 	if (!apiKey) throw new Error("Routera API key is required to discover models");
 
 	const [openaiRecords, anthropicRecords] = await Promise.all([
-		fetchCatalog(OPENAI_MODELS_URL, apiKey, context.signal),
-		fetchCatalog(ANTHROPIC_MODELS_URL, apiKey, context.signal),
+		fetchCatalog("models", OPENAI_MODELS_URL, apiKey, context.signal),
+		fetchCatalog("Anthropic models", ANTHROPIC_MODELS_URL, apiKey, context.signal),
 	]);
 
 	const models = new Map<string, Model<RouteraApi>>();
@@ -214,7 +254,7 @@ export default function (pi: ExtensionAPI): void {
 			id: PROVIDER_ID,
 			name: "Routera",
 			baseUrl: OPENAI_BASE_URL,
-			auth: { apiKey: envApiKeyAuth("Routera API key", ["ROUTERA_API_KEY"]) },
+			auth: { apiKey: bearerHeaderAuth(envApiKeyAuth("Routera API key", ["ROUTERA_API_KEY"])) },
 			models: [],
 			fetchModels: fetchRouteraModels,
 			api: {
@@ -223,13 +263,4 @@ export default function (pi: ExtensionAPI): void {
 			},
 		}),
 	);
-
-	// pi-ai's Anthropic client normally sends x-api-key. Routera documents
-	// Authorization: Bearer as its canonical auth header; send both so the
-	// provider works with the SDK and with Routera's documented auth contract.
-	pi.on("before_provider_headers", (event, ctx) => {
-		if (ctx.model?.provider !== PROVIDER_ID || ctx.model.api !== "anthropic-messages") return;
-		const apiKeyHeader = event.headers["x-api-key"] ?? event.headers["X-API-Key"];
-		if (typeof apiKeyHeader === "string") event.headers.Authorization = `Bearer ${apiKeyHeader}`;
-	});
 }

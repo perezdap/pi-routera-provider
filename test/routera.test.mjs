@@ -91,14 +91,11 @@ try {
 	assert(!mod.isAnthropicModel({ id: "openai/gpt-5.5", owned_by: "openai" }), "OpenAI is not Anthropic");
 
 	const registered = [];
-	const handlers = {};
 	const pi = {
 		registerProvider(provider) {
 			registered.push(provider);
 		},
-		on(event, handler) {
-			(handlers[event] ??= []).push(handler);
-		},
+		on() {},
 	};
 
 	await mod.default(pi);
@@ -148,16 +145,13 @@ try {
 	assertEq(claude?.compat?.forceAdaptiveThinking, undefined, "Claude uses pi budget-based thinking (Routera adaptive not universal)");
 	assert(claude?.compat?.supportsEagerToolInputStreaming === false, "Claude disables eager tool input streaming");
 	assert(claude?.thinkingLevelMap?.off === undefined, "Claude 'off' is a selectable level (omitted, not null)");
+	assertEq(gpt?.maxTokens, 16384, "OpenAI maxTokens capped at the default output budget");
+	assertEq(claude?.maxTokens, 64000, "Claude keeps the larger output budget for budget-based thinking");
 	assertEq(claude?.contextWindow, 1000000, "context window mapped");
 	assert(Array.isArray(claude?.input) && claude.input.includes("image"), "vision input mapped");
 	assertEq(claude?.cost.input, 0, "undocumented Routera pricing units are not guessed");
 	assert(!models.some((model) => model.id === "moonshot/kimi-k3"), "non-Anthropic compatibility entry ignored");
 
-	const headerHandler = handlers.before_provider_headers?.[0];
-	assert(typeof headerHandler === "function", "Anthropic header hook registered");
-	const headers = { "x-api-key": "rta_test_key" };
-	headerHandler({ headers }, { model: { provider: "routera", api: "anthropic-messages" } });
-	assertEq(headers.Authorization, "Bearer rta_test_key", "Anthropic request gets Routera bearer auth");
 
 	const auth = provider.auth.apiKey;
 	const login = await auth.login({
@@ -173,6 +167,18 @@ try {
 		signal: new AbortController().signal,
 	});
 	assertEq(resolved.auth.apiKey, "rta_stored", "stored key wins");
+	assertEq(
+		resolved.auth.headers?.Authorization,
+		"Bearer rta_stored",
+		"Bearer header declared for stored key (Routera's canonical auth header)",
+	);
+	const resolvedEnv = await auth.resolve({
+		credential: undefined,
+		ctx: { env: async (name) => (name === "ROUTERA_API_KEY" ? "rta_env" : undefined) },
+		signal: new AbortController().signal,
+	});
+	assertEq(resolvedEnv.auth.apiKey, "rta_env", "env key used when no stored credential");
+	assertEq(resolvedEnv.auth.headers?.Authorization, "Bearer rta_env", "Bearer header declared for env key");
 } finally {
 	globalThis.fetch = originalFetch;
 }

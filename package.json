@@ -12,6 +12,9 @@
   },
   "keywords": ["pi", "pi-package", "pi-extension", "routera", "provider", "llm"],
   "license": "MIT",
+  "engines": {
+    "node": ">=22.6"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/perezdap/pi-routera-provider.git"
